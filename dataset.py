@@ -5,31 +5,25 @@ import requests
 from PIL import Image
 import numpy as np
 from io import BytesIO
+import math
 
 class IGNMultiScaleDatasetBuilder:
     def __init__(self, output_dir="dataset"):
         self.output_dir = output_dir
-        self.wmts_url = "https://wxs.ign.fr/ortho/geoportail/wmts"
-        self.api_key = "essentiels"  # clé gratuite pour les données essentielles
+        self.wmts_url = "https://data.geopf.fr/wmts"
         
-    def get_bbox_from_center(self, lat, lon, size_meters):
-        """Calcule la bbox autour d'un point central"""
-        # Approximation rapide (à affiner selon la latitude)
-        meters_per_degree_lat = 111320
-        meters_per_degree_lon = 111320 * np.cos(np.radians(lat))
-        
-        half_size_lat = (size_meters / 2) / meters_per_degree_lat
-        half_size_lon = (size_meters / 2) / meters_per_degree_lon
-        
-        return {
-            'west': lon - half_size_lon,
-            'east': lon + half_size_lon,
-            'north': lat + half_size_lat,
-            'south': lat - half_size_lat
-        }
-
-    def get_wmts_url(self, bbox, size_px=64):
+    def deg2tile(self, lat_deg, lon_deg, zoom):
+        """Convertit lat/lon en coordonnées de tuile"""
+        lat_rad = math.radians(lat_deg)
+        n = 2.0 ** zoom
+        xtile = int((lon_deg + 180.0) / 360.0 * n)
+        ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
+        return (xtile, ytile)
+    
+    def get_wmts_url(self, lat, lon, zoom):
         """Génère l'URL WMTS pour l'IGN"""
+        x, y = self.deg2tile(lat, lon, zoom)
+        
         params = {
             'SERVICE': 'WMTS',
             'REQUEST': 'GetTile',
@@ -38,23 +32,36 @@ class IGNMultiScaleDatasetBuilder:
             'STYLE': 'normal',
             'FORMAT': 'image/jpeg',
             'TILEMATRIXSET': 'PM',
-            'TILEMATRIX': '16',
-            'TILEROW': '23294',
-            'TILECOL': '33536',
-            'apikey': self.api_key
+            'TILEMATRIX': str(zoom),
+            'TILEROW': str(y),
+            'TILECOL': str(x)
         }
         
         # Construire l'URL avec les paramètres
         url_params = '&'.join([f"{k}={v}" for k, v in params.items()])
         return f"{self.wmts_url}?{url_params}"
 
+    def get_appropriate_zoom(self, size_meters):
+        """Détermine le niveau de zoom approprié pour une taille donnée"""
+        # Approximation basique :
+        # zoom 18 ≈ 50m
+        # zoom 16 ≈ 200m
+        # zoom 14 ≈ 800m
+        # zoom 12 ≈ 3200m
+        if size_meters <= 100:
+            return 18
+        elif size_meters <= 500:
+            return 16
+        else:
+            return 14
+
     def capture_location(self, lat, lon, name):
         """Capture les images aux 3 échelles pour une localisation donnée"""
         # Définition des échelles
         scales = {
-            'micro': 100,   # 100m × 100m
-            'meso': 500,    # 500m × 500m
-            'macro': 2000   # 2km × 2km
+            'micro': {'size': 100, 'zoom': 18},   # 100m × 100m
+            'meso': {'size': 500, 'zoom': 16},    # 500m × 500m
+            'macro': {'size': 2000, 'zoom': 14}   # 2km × 2km
         }
         
         # Créer le dossier pour ce lieu
@@ -66,7 +73,7 @@ class IGNMultiScaleDatasetBuilder:
             'latitude': lat,
             'longitude': lon,
             'capture_date': datetime.now().isoformat(),
-            'scales': scales,
+            'scales': {k: v['size'] for k, v in scales.items()},
             'source': 'IGN-WMTS'
         }
         
@@ -75,17 +82,16 @@ class IGNMultiScaleDatasetBuilder:
             json.dump(metadata, f, indent=2)
         
         # Capturer les images à chaque échelle
-        for scale_name, scale_size in scales.items():
+        for scale_name, scale_info in scales.items():
             image_path = os.path.join(location_dir, f'{scale_name}.png')
-            bbox = self.get_bbox_from_center(lat, lon, scale_size)
-            self.capture_ign_image(bbox, image_path)
+            self.capture_ign_image(lat, lon, scale_info['zoom'], image_path)
 
-    def capture_ign_image(self, bbox, output_path):
+    def capture_ign_image(self, lat, lon, zoom, output_path):
         """Capture une image IGN et la sauvegarde"""
-        url = self.get_wmts_url(bbox)
+        url = self.get_wmts_url(lat, lon, zoom)
         
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=10)
             response.raise_for_status()
             
             # Convertir la réponse en image
@@ -96,12 +102,14 @@ class IGNMultiScaleDatasetBuilder:
             
             # Sauvegarder
             img.save(output_path)
+            print(f"Image sauvegardée : {output_path}")
             
         except Exception as e:
             print(f"Erreur lors de la capture de l'image: {e}")
+            print(f"URL tentée: {url}")
             return None
 
-def build_france_dataset(sample_size=1000):
+def build_france_dataset(sample_size=10):
     """Construit un dataset sur la France métropolitaine"""
     # Limites approximatives de la France métropolitaine
     bounds = {
@@ -123,9 +131,6 @@ def build_france_dataset(sample_size=1000):
         lat = np.random.uniform(bounds['min_lat'], bounds['max_lat'])
         lon = np.random.uniform(bounds['min_lon'], bounds['max_lon'])
         
-        # TODO: Ajouter une vérification si le point est bien en France
-        # On pourrait utiliser un shapefile de la France pour ça
-        
         location = {
             'name': f'loc_{len(locations):04d}',
             'lat': lat,
@@ -135,7 +140,8 @@ def build_france_dataset(sample_size=1000):
     
     # Capturer les images pour chaque location
     for loc in locations:
-        print(f"Capturing {loc['name']}...")
+        print(f"\nCapturing {loc['name']}...")
+        print(f"Coordonnées : {loc['lat']:.4f}, {loc['lon']:.4f}")
         builder.capture_location(loc['lat'], loc['lon'], loc['name'])
 
 if __name__ == "__main__":

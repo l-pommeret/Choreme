@@ -314,7 +314,7 @@ if __name__ == "__main__":
     config = {
         "data_dir": "data",
         "num_epochs": 300,
-        "batch_size": 32
+        "batch_size": 128
     }
     
     # Train the model

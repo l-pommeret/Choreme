@@ -38,36 +38,33 @@ class MultiScaleImageDataset(Dataset):
         return torch.FloatTensor(img_array)
 
 class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, dropout_rate=0.1):
+    def __init__(self, in_channels, out_channels):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(out_channels)
-        self.dropout = nn.Dropout2d(dropout_rate)
         
     def forward(self, x):
-        x = F.leaky_relu(self.bn1(self.conv1(x)), negative_slope=0.2)
+        x = F.leaky_relu(self.bn1(self.conv1(x)), 0.2)
         identity = x
-        x = F.leaky_relu(self.bn2(self.conv2(x)), negative_slope=0.2)
-        x = self.dropout(x)
+        x = F.leaky_relu(self.bn2(self.conv2(x)), 0.2)
         return x + identity
 
 class ConvEncoder(nn.Module):
     def __init__(self, scale_latent_dim):
         super().__init__()
-        self.conv1 = ConvBlock(3, 64)
-        self.conv2 = ConvBlock(64, 128)
-        self.conv3 = ConvBlock(128, 256)
-        self.conv4 = ConvBlock(256, 512)
+        self.conv1 = ConvBlock(3, 32)
+        self.conv2 = ConvBlock(32, 64)
+        self.conv3 = ConvBlock(64, 128)
         
         self.flatten = nn.Flatten()
         self.fc = nn.Sequential(
-            nn.Linear(512 * 8 * 8, 1024),
-            nn.LayerNorm(1024),
+            nn.Linear(128 * 8 * 8, 512),
+            nn.LayerNorm(512),
             nn.LeakyReLU(0.2),
-            nn.Dropout(0.3),
-            nn.Linear(1024, scale_latent_dim),
+            nn.Dropout(0.1),
+            nn.Linear(512, scale_latent_dim),
             nn.LayerNorm(scale_latent_dim)
         )
         
@@ -78,7 +75,6 @@ class ConvEncoder(nn.Module):
         x = F.max_pool2d(x, 2)
         x = self.conv3(x)
         x = F.max_pool2d(x, 2)
-        x = self.conv4(x)
         
         x = self.flatten(x)
         x = self.fc(x)
@@ -88,23 +84,23 @@ class ConvDecoder(nn.Module):
     def __init__(self, latent_dim):
         super().__init__()
         self.fc = nn.Sequential(
-            nn.Linear(latent_dim, 1024),
-            nn.LayerNorm(1024),
+            nn.Linear(latent_dim, 512),
+            nn.LayerNorm(512),
             nn.LeakyReLU(0.2),
-            nn.Dropout(0.3),
-            nn.Linear(1024, 512 * 8 * 8),
-            nn.LayerNorm(512 * 8 * 8),
+            nn.Dropout(0.1),
+            nn.Linear(512, 128 * 8 * 8),
+            nn.LayerNorm(128 * 8 * 8),
             nn.LeakyReLU(0.2)
         )
         
-        self.conv1 = ConvBlock(512, 256)
-        self.conv2 = ConvBlock(256, 128)
-        self.conv3 = ConvBlock(128, 64)
-        self.final_conv = nn.Conv2d(64, 3, kernel_size=1)
+        self.conv1 = ConvBlock(128, 64)
+        self.conv2 = ConvBlock(64, 32)
+        self.conv3 = ConvBlock(32, 16)
+        self.final_conv = nn.Conv2d(16, 3, kernel_size=1)
         
     def forward(self, x):
         x = self.fc(x)
-        x = x.view(-1, 512, 8, 8)
+        x = x.view(-1, 128, 8, 8)
         
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
         x = self.conv1(x)
@@ -119,7 +115,7 @@ class ConvDecoder(nn.Module):
         return torch.sigmoid(x)
 
 class MultiScaleCNNAutoencoder(nn.Module):
-    def __init__(self, scale_latent_dim=512, final_latent_dim=384):
+    def __init__(self, scale_latent_dim=128, final_latent_dim=96):
         super().__init__()
         
         self.micro_encoder = ConvEncoder(scale_latent_dim)
@@ -128,16 +124,16 @@ class MultiScaleCNNAutoencoder(nn.Module):
         
         self.attention = nn.MultiheadAttention(
             embed_dim=scale_latent_dim,
-            num_heads=8,
+            num_heads=4,
             batch_first=True,
-            dropout=0.2
+            dropout=0.1
         )
         
         self.fusion = nn.Sequential(
             nn.Linear(scale_latent_dim * 3, final_latent_dim),
             nn.LayerNorm(final_latent_dim),
             nn.LeakyReLU(0.2),
-            nn.Dropout(0.3)
+            nn.Dropout(0.1)
         )
         
         self.micro_decoder = ConvDecoder(final_latent_dim)
@@ -161,19 +157,15 @@ class MultiScaleCNNAutoencoder(nn.Module):
         
         return micro_decoded, meso_decoded, macro_decoded, latent
 
-def compute_loss(outputs, targets, weights, latent, l1_lambda=1e-4, l2_lambda=1e-3):
+def compute_loss(outputs, targets, weights, latent, l1_lambda=1e-5, l2_lambda=1e-4):
     micro_out, meso_out, macro_out, latent = outputs
     micro_target, meso_target, macro_target = targets
     
     mse_criterion = nn.MSELoss()
     
-    def combined_loss(pred, target, weight):
-        mse = mse_criterion(pred, target)
-        return weight * mse
-    
-    micro_loss = combined_loss(micro_out, micro_target, weights['micro'])
-    meso_loss = combined_loss(meso_out, meso_target, weights['meso'])
-    macro_loss = combined_loss(macro_out, macro_target, weights['macro'])
+    micro_loss = mse_criterion(micro_out, micro_target) * weights['micro']
+    meso_loss = mse_criterion(meso_out, meso_target) * weights['meso']
+    macro_loss = mse_criterion(macro_out, macro_target) * weights['macro']
     
     reconstruction_loss = micro_loss + meso_loss + macro_loss
     
@@ -182,18 +174,15 @@ def compute_loss(outputs, targets, weights, latent, l1_lambda=1e-4, l2_lambda=1e
     
     total_loss = reconstruction_loss + l1_loss + l2_loss
     
-    loss_components = {
+    return total_loss, {
+        'total': total_loss.item(),
         'reconstruction': reconstruction_loss.item(),
-        'micro_loss': micro_loss.item(),
-        'meso_loss': meso_loss.item(),
-        'macro_loss': macro_loss.item(),
-        'l1': l1_loss.item(),
-        'l2': l2_loss.item()
+        'micro': micro_loss.item(),
+        'meso': meso_loss.item(),
+        'macro': macro_loss.item()
     }
-    
-    return total_loss, loss_components
 
-def train_model(data_dir, num_epochs=100, batch_size=64):
+def train_model(data_dir, num_epochs=50, batch_size=64):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
@@ -206,19 +195,19 @@ def train_model(data_dir, num_epochs=100, batch_size=64):
     train_dataset = MultiScaleImageDataset(data_dir, 'train')
     test_dataset = MultiScaleImageDataset(data_dir, 'test')
     
-    # Réduction du nombre de workers à 2
     train_loader = DataLoader(
         train_dataset, 
         batch_size=batch_size, 
         shuffle=True, 
-        num_workers=2,  # Réduit de 4 à 2
+        num_workers=2,
         pin_memory=True,
-        persistent_workers=True  # Garde les workers en vie entre les epochs
+        persistent_workers=True
     )
+    
     test_loader = DataLoader(
         test_dataset, 
         batch_size=batch_size, 
-        num_workers=2,  # Réduit de 4 à 2
+        num_workers=2,
         pin_memory=True,
         persistent_workers=True
     )
@@ -226,16 +215,17 @@ def train_model(data_dir, num_epochs=100, batch_size=64):
     model = MultiScaleCNNAutoencoder().to(device)
     optimizer = optim.AdamW(
         model.parameters(),
-        lr=3e-4,
-        weight_decay=1e-4,
+        lr=1e-4,
+        weight_decay=1e-5,
         betas=(0.9, 0.999)
     )
     
-    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer,
-        T_0=10,
-        T_mult=2,
-        eta_min=1e-6
+        max_lr=1e-3,
+        epochs=num_epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=0.3
     )
     
     best_test_loss = float('inf')
@@ -246,8 +236,7 @@ def train_model(data_dir, num_epochs=100, batch_size=64):
         model.train()
         epoch_losses = []
         
-        progress_bar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}')
-        for micro, meso, macro in progress_bar:
+        for micro, meso, macro in tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}'):
             micro = micro.to(device, non_blocking=True)
             meso = meso.to(device, non_blocking=True)
             macro = macro.to(device, non_blocking=True)
@@ -263,76 +252,59 @@ def train_model(data_dir, num_epochs=100, batch_size=64):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+            scheduler.step()
             
             epoch_losses.append(loss.item())
-            # Mise à jour moins fréquente de la barre de progression
-            if len(epoch_losses) % 5 == 0:
-                progress_bar.set_postfix({'loss': f'{loss.item():.6f}'})
-        
-        scheduler.step()
         
         model.eval()
-        test_loss = evaluate_model(model, test_loader, scale_weights, device)
+        test_loss = 0
+        with torch.no_grad():
+            for micro, meso, macro in test_loader:
+                micro = micro.to(device, non_blocking=True)
+                meso = meso.to(device, non_blocking=True)
+                macro = macro.to(device, non_blocking=True)
+                
+                outputs = model(micro, meso, macro)
+                loss, _ = compute_loss(outputs, (micro, meso, macro), scale_weights, outputs[3])
+                test_loss += loss.item()
         
+        test_loss /= len(test_loader)
         avg_train_loss = np.mean(epoch_losses)
+        
         train_losses.append(avg_train_loss)
         test_losses.append(test_loss)
         
-        # Logs plus concis
-        print(f'\nEpoch {epoch+1}: Train Loss: {avg_train_loss:.6f}, Test Loss: {test_loss:.6f}, LR: {scheduler.get_last_lr()[0]:.6f}')
+        print(f'\nEpoch {epoch+1}:')
+        print(f'Train Loss: {avg_train_loss:.6f}')
+        print(f'Test Loss: {test_loss:.6f}')
+        print(f'LR: {scheduler.get_last_lr()[0]:.6f}')
         
-        if test_loss < best_test_loss:
+        # Sauvegarde uniquement si amélioration significative
+        if test_loss < best_test_loss * 0.95:
             best_test_loss = test_loss
-            # Sauvegarde du modèle sans le scheduler pour réduire la taille
             torch.save({
-                'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'train_loss': avg_train_loss,
                 'test_loss': test_loss,
-            }, 'best_model_cnn.pth')
+            }, 'best_model.pth')
         
-        # Sauvegarde des graphiques moins fréquente (tous les 20 epochs)
-        if (epoch + 1) % 20 == 0:
-            plt.figure(figsize=(12, 6))
-            plt.subplot(1, 2, 1)
-            plt.plot(train_losses, label='Train Loss')
-            plt.plot(test_losses, label='Test Loss')
+        # Plot moins fréquent
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            plt.figure(figsize=(10, 5))
+            plt.plot(train_losses, label='Train')
+            plt.plot(test_losses, label='Test')
             plt.title('Training Progress')
             plt.xlabel('Epoch')
             plt.ylabel('Loss')
             plt.legend()
-            
-            plt.subplot(1, 2, 2)
-            plt.plot([scheduler.get_last_lr()[0] for _ in range(len(train_losses))])
-            plt.title('Learning Rate')
-            plt.xlabel('Epoch')
-            plt.ylabel('LR')
-            
-            plt.tight_layout()
-            plt.savefig(f'training_progress_epoch_{epoch+1}.png')
+            plt.savefig('training_progress.png')
             plt.close()
     
     return model, train_losses, test_losses
 
-def evaluate_model(model, dataloader, weights, device):
-    model.eval()
-    total_loss = 0
-    with torch.no_grad():
-        for micro, meso, macro in dataloader:
-            micro = micro.to(device, non_blocking=True)
-            meso = meso.to(device, non_blocking=True)
-            macro = macro.to(device, non_blocking=True)
-            
-            outputs = model(micro, meso, macro)
-            loss, _ = compute_loss(outputs, (micro, meso, macro), weights, outputs[3])
-            total_loss += loss.item()
-    
-    return total_loss / len(dataloader)
-
 if __name__ == "__main__":
     config = {
         "data_dir": "data",
-        "num_epochs": 100,
+        "num_epochs": 50,
         "batch_size": 64
     }
     

@@ -206,8 +206,22 @@ def train_model(data_dir, num_epochs=100, batch_size=64):
     train_dataset = MultiScaleImageDataset(data_dir, 'train')
     test_dataset = MultiScaleImageDataset(data_dir, 'test')
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=4, pin_memory=True)
+    # Réduction du nombre de workers à 2
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True, 
+        num_workers=2,  # Réduit de 4 à 2
+        pin_memory=True,
+        persistent_workers=True  # Garde les workers en vie entre les epochs
+    )
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=batch_size, 
+        num_workers=2,  # Réduit de 4 à 2
+        pin_memory=True,
+        persistent_workers=True
+    )
     
     model = MultiScaleCNNAutoencoder().to(device)
     optimizer = optim.AdamW(
@@ -251,7 +265,9 @@ def train_model(data_dir, num_epochs=100, batch_size=64):
             optimizer.step()
             
             epoch_losses.append(loss.item())
-            progress_bar.set_postfix({'loss': f'{loss.item():.6f}'})
+            # Mise à jour moins fréquente de la barre de progression
+            if len(epoch_losses) % 5 == 0:
+                progress_bar.set_postfix({'loss': f'{loss.item():.6f}'})
         
         scheduler.step()
         
@@ -262,24 +278,21 @@ def train_model(data_dir, num_epochs=100, batch_size=64):
         train_losses.append(avg_train_loss)
         test_losses.append(test_loss)
         
-        print(f'\nEpoch {epoch+1}:')
-        print(f'Train Loss: {avg_train_loss:.6f}')
-        print(f'Test Loss: {test_loss:.6f}')
-        print('Loss Components:', loss_components)
-        print(f'Learning Rate: {scheduler.get_last_lr()[0]:.6f}')
+        # Logs plus concis
+        print(f'\nEpoch {epoch+1}: Train Loss: {avg_train_loss:.6f}, Test Loss: {test_loss:.6f}, LR: {scheduler.get_last_lr()[0]:.6f}')
         
         if test_loss < best_test_loss:
             best_test_loss = test_loss
+            # Sauvegarde du modèle sans le scheduler pour réduire la taille
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': avg_train_loss,
                 'test_loss': test_loss,
             }, 'best_model_cnn.pth')
-            
-        if (epoch + 1) % 5 == 0:
+        
+        # Sauvegarde des graphiques moins fréquente (tous les 20 epochs)
+        if (epoch + 1) % 20 == 0:
             plt.figure(figsize=(12, 6))
             plt.subplot(1, 2, 1)
             plt.plot(train_losses, label='Train Loss')

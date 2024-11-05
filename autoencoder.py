@@ -121,7 +121,7 @@ def train_model(data_dir, num_epochs=50):
     
     # Modèle et optimisation
     model = MultiScaleAutoencoder().to(device)  # Retrait de input_channels=3
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-3)
+    optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-3)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5)
     
     best_test_loss = float('inf')

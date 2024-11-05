@@ -33,7 +33,7 @@ class MultiScaleImageDataset(Dataset):
         return torch.FloatTensor(img_array)
 
 class MultiScaleAutoencoder(nn.Module):
-    def __init__(self, scale_latent_dim=64, final_latent_dim=128):
+    def __init__(self, scale_latent_dim=64, final_latent_dim=512):
         super(MultiScaleAutoencoder, self).__init__()
         
         # On fixe directement input_dim pour RGB (3 canaux)
@@ -175,7 +175,7 @@ def train_model(data_dir, num_epochs=50):
     
     return model, train_losses, test_losses
 
-def compute_loss(outputs, targets, weights, latent, l1_lambda=1e-5, l2_lambda=1e-4):
+def compute_loss(outputs, targets, weights, latent, l1_lambda=1e-4, l2_lambda=1e-3):
     micro_out, meso_out, macro_out, latent = outputs
     micro_target, meso_target, macro_target = targets
     

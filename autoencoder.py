@@ -118,7 +118,7 @@ class ConvDecoder(nn.Module):
         return torch.sigmoid(x)
 
 class MultiScaleCNNAutoencoder(nn.Module):
-    def __init__(self, scale_latent_dim=128, final_latent_dim=256):
+    def __init__(self, scale_latent_dim=512, final_latent_dim=512):
         super().__init__()
         
         self.micro_encoder = ConvEncoder(scale_latent_dim)

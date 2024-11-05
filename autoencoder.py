@@ -27,8 +27,8 @@ class MultiScaleImageDataset(Dataset):
         return micro, meso, macro
     
     def load_image(self, path):
-        img = Image.open(path).convert('L')
-        img_array = np.array(img) / 255.0
+        img = Image.open(path)  # Suppression du convert('L') pour garder les couleurs
+        img_array = np.array(img).transpose(2, 0, 1) / 255.0  # Format (C, H, W) pour PyTorch
         return torch.FloatTensor(img_array)
 
 class MultiScaleAutoencoder(nn.Module):
@@ -48,7 +48,7 @@ class MultiScaleAutoencoder(nn.Module):
             nn.Linear(scale_latent_dim * 3, final_latent_dim),
             nn.BatchNorm1d(final_latent_dim),
             nn.ReLU(),
-            nn.Dropout(0.1)  # Légère régularisation par dropout
+            nn.Dropout(0.1)
         )
         
         # Décodeurs pour chaque échelle
@@ -59,7 +59,7 @@ class MultiScaleAutoencoder(nn.Module):
     def create_encoder(self, latent_dim):
         return nn.Sequential(
             nn.Flatten(),
-            nn.Linear(64*64, 1024),
+            nn.Linear(3*64*64, 1024),  # 3 canaux RGB
             nn.BatchNorm1d(1024),
             nn.ReLU(),
             nn.Linear(1024, 512),
@@ -78,7 +78,7 @@ class MultiScaleAutoencoder(nn.Module):
             nn.Linear(512, 1024),
             nn.BatchNorm1d(1024),
             nn.ReLU(),
-            nn.Linear(1024, 64*64),
+            nn.Linear(1024, 3*64*64),  # 3 canaux RGB
             nn.Sigmoid()
         )
     
@@ -90,9 +90,9 @@ class MultiScaleAutoencoder(nn.Module):
         combined = torch.cat([micro_encoded, meso_encoded, macro_encoded], dim=1)
         latent = self.fusion(combined)
         
-        micro_decoded = self.micro_decoder(latent).view(-1, 64, 64)
-        meso_decoded = self.meso_decoder(latent).view(-1, 64, 64)
-        macro_decoded = self.macro_decoder(latent).view(-1, 64, 64)
+        micro_decoded = self.micro_decoder(latent).view(-1, 3, 64, 64)  # Format (B, C, H, W)
+        meso_decoded = self.meso_decoder(latent).view(-1, 3, 64, 64)
+        macro_decoded = self.macro_decoder(latent).view(-1, 3, 64, 64)
         
         return micro_decoded, meso_decoded, macro_decoded, latent
 
@@ -142,19 +142,20 @@ def visualize_reconstructions(model, dataloader, device, epoch):
         # Visualiser la première image du batch
         fig, axes = plt.subplots(3, 2, figsize=(10, 15))
         
-        axes[0, 0].imshow(micro[0].cpu(), cmap='gray')
+        # Conversion pour l'affichage (C,H,W) -> (H,W,C)
+        axes[0, 0].imshow(micro[0].cpu().numpy().transpose(1, 2, 0))
         axes[0, 0].set_title('Original Micro')
-        axes[0, 1].imshow(micro_out[0].cpu().detach(), cmap='gray')
+        axes[0, 1].imshow(micro_out[0].cpu().detach().numpy().transpose(1, 2, 0))
         axes[0, 1].set_title('Reconstructed Micro')
         
-        axes[1, 0].imshow(meso[0].cpu(), cmap='gray')
+        axes[1, 0].imshow(meso[0].cpu().numpy().transpose(1, 2, 0))
         axes[1, 0].set_title('Original Meso')
-        axes[1, 1].imshow(meso_out[0].cpu().detach(), cmap='gray')
+        axes[1, 1].imshow(meso_out[0].cpu().detach().numpy().transpose(1, 2, 0))
         axes[1, 1].set_title('Reconstructed Meso')
         
-        axes[2, 0].imshow(macro[0].cpu(), cmap='gray')
+        axes[2, 0].imshow(macro[0].cpu().numpy().transpose(1, 2, 0))
         axes[2, 0].set_title('Original Macro')
-        axes[2, 1].imshow(macro_out[0].cpu().detach(), cmap='gray')
+        axes[2, 1].imshow(macro_out[0].cpu().detach().numpy().transpose(1, 2, 0))
         axes[2, 1].set_title('Reconstructed Macro')
         
         plt.savefig(f'reconstructions_epoch_{epoch}.png')

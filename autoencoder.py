@@ -99,6 +99,7 @@ class MultiScaleAutoencoder(nn.Module):
         
         return micro_decoded, meso_decoded, macro_decoded, latent
 
+# Dans train_model, changer cette ligne :
 def train_model(data_dir, num_epochs=50):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Utilisation de {device}")
@@ -119,7 +120,7 @@ def train_model(data_dir, num_epochs=50):
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
     
     # Modèle et optimisation
-    model = MultiScaleAutoencoder(input_channels=3).to(device)
+    model = MultiScaleAutoencoder().to(device)  # Retrait de input_channels=3
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5)
     

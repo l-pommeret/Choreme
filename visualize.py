@@ -119,7 +119,7 @@ def main():
     print(f"Utilisation de: {device}")
     
     data_dir = "data"
-    checkpoint_path = "best_model.pth"  # Retour au nom original du checkpoint
+    checkpoint_path = "best_model_rgb.pth"  # Retour au nom original du checkpoint
     
     try:
         # Chargement du modèle sans input_channels

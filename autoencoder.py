@@ -262,4 +262,4 @@ def train_model(data_dir, num_epochs=50):
     return model, train_losses, test_losses
 
 if __name__ == "__main__":
-    model, train_losses, test_losses = train_model("data", num_epochs=50)
+    model, train_losses, test_losses = train_model("data", num_epochs=5)

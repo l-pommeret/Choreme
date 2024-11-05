@@ -50,9 +50,9 @@ class IGNMultiScaleDatasetBuilder:
         """Capture les images aux 3 échelles pour une localisation donnée"""
         # Définition des échelles
         scales = {
-            'micro': 100,   # 100m × 100m
-            'meso': 500,    # 500m × 500m
-            'macro': 2000   # 2km × 2km
+            'micro': 500,   # 500m × 500m
+            'meso': 1000,    # 1000m × 1000m
+            'macro': 4000   # 2km × 2km
         }
         
         # Créer le dossier pour ce lieu

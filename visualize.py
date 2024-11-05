@@ -119,13 +119,13 @@ def main():
     print(f"Utilisation de: {device}")
     
     data_dir = "data"
-    checkpoint_path = "best_model_rgb.pth"  # Notez le _rgb pour être cohérent
+    checkpoint_path = "best_model.pth"  # Retour au nom original du checkpoint
     
     try:
-        # Chargement du modèle avec input_channels=3 pour RGB
-        model = MultiScaleAutoencoder(input_channels=3).to(device)
+        # Chargement du modèle sans input_channels
+        model = MultiScaleAutoencoder().to(device)
         model, epoch, test_loss = load_checkpoint(model, checkpoint_path)
-        print(f"Modèle RGB chargé de l'époque {epoch} avec loss de test {test_loss:.6f}")
+        print(f"Modèle chargé de l'époque {epoch} avec loss de test {test_loss:.6f}")
         
         # Chargement des données
         test_dataset = MultiScaleImageDataset(data_dir, 'test')
@@ -145,10 +145,6 @@ def main():
     except Exception as e:
         print(f"\nUne erreur s'est produite lors de la visualisation:")
         print(f"{str(e)}")
-        print("\nAssurez-vous que:")
-        print("1. Le modèle a bien été entraîné avec des images RGB (3 canaux)")
-        print("2. Le fichier best_model_rgb.pth existe et correspond à un modèle RGB")
-        print("3. Les images dans le dataset sont bien en RGB")
         raise
 
 if __name__ == "__main__":

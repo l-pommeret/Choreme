@@ -33,10 +33,11 @@ class MultiScaleImageDataset(Dataset):
         return torch.FloatTensor(img_array)
 
 class MultiScaleAutoencoder(nn.Module):
-    def __init__(self, input_channels=3, scale_latent_dim=64, final_latent_dim=128):
+    def __init__(self, scale_latent_dim=64, final_latent_dim=128):
         super(MultiScaleAutoencoder, self).__init__()
         
-        self.input_channels = input_channels
+        # On fixe directement input_dim pour RGB (3 canaux)
+        self.input_dim = 3 * 64 * 64  # 3 canaux RGB
         self.scale_latent_dim = scale_latent_dim
         self.final_latent_dim = final_latent_dim
         
@@ -61,7 +62,7 @@ class MultiScaleAutoencoder(nn.Module):
     def create_encoder(self, latent_dim):
         return nn.Sequential(
             nn.Flatten(),
-            nn.Linear(self.input_channels * 64 * 64, 1024),
+            nn.Linear(self.input_dim, 1024),  # Utilise self.input_dim au lieu de 64*64
             nn.BatchNorm1d(1024),
             nn.ReLU(),
             nn.Linear(1024, 512),
@@ -80,24 +81,21 @@ class MultiScaleAutoencoder(nn.Module):
             nn.Linear(512, 1024),
             nn.BatchNorm1d(1024),
             nn.ReLU(),
-            nn.Linear(1024, self.input_channels * 64 * 64),
+            nn.Linear(1024, self.input_dim),  # Utilise self.input_dim au lieu de 64*64
             nn.Sigmoid()
         )
     
     def forward(self, micro, meso, macro):
-        # Encodage
         micro_encoded = self.micro_encoder(micro)
         meso_encoded = self.meso_encoder(meso)
         macro_encoded = self.macro_encoder(macro)
         
-        # Fusion
         combined = torch.cat([micro_encoded, meso_encoded, macro_encoded], dim=1)
         latent = self.fusion(combined)
         
-        # Décodage
-        micro_decoded = self.micro_decoder(latent).view(-1, self.input_channels, 64, 64)
-        meso_decoded = self.meso_decoder(latent).view(-1, self.input_channels, 64, 64)
-        macro_decoded = self.macro_decoder(latent).view(-1, self.input_channels, 64, 64)
+        micro_decoded = self.micro_decoder(latent).view(-1, 3, 64, 64)  # 3 canaux
+        meso_decoded = self.meso_decoder(latent).view(-1, 3, 64, 64)   # 3 canaux
+        macro_decoded = self.macro_decoder(latent).view(-1, 3, 64, 64)  # 3 canaux
         
         return micro_decoded, meso_decoded, macro_decoded, latent
 

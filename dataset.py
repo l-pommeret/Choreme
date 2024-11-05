@@ -167,4 +167,4 @@ def build_france_dataset(sample_size=100, test_split=0.2):
 
 if __name__ == "__main__":
     # Créer un dataset avec 100 exemples, dont 20% pour le test
-    build_france_dataset(sample_size=200, test_split=0.1)
+    build_france_dataset(sample_size=1000, test_split=0.002)

@@ -210,4 +210,4 @@ def evaluate_model(model, dataloader, weights, device):
     return total_loss / len(dataloader)
 
 if __name__ == "__main__":
-    model, train_losses, test_losses = train_model("data", num_epochs=50)
+    model, train_losses, test_losses = train_model("data", num_epochs=300)

@@ -46,16 +46,16 @@ def visualize_random_samples(model, test_loader, device, num_samples=5):
             
             # Afficher les originaux et reconstructions
             # Micro
-            axes[i, 0].imshow(micro.cpu().squeeze())  # Retrait de cmap='gray'
-            axes[i, 1].imshow(micro_out.cpu().squeeze())
+            axes[i, 0].imshow(micro.cpu().squeeze().numpy().transpose(1, 2, 0))  # Transposition pour RGB
+            axes[i, 1].imshow(micro_out.cpu().squeeze().numpy().transpose(1, 2, 0))
 
             # Meso
-            axes[i, 2].imshow(meso.cpu().squeeze())
-            axes[i, 3].imshow(meso_out.cpu().squeeze())
+            axes[i, 2].imshow(meso.cpu().squeeze().numpy().transpose(1, 2, 0))
+            axes[i, 3].imshow(meso_out.cpu().squeeze().numpy().transpose(1, 2, 0))
 
             # Macro
-            axes[i, 4].imshow(macro.cpu().squeeze())
-            axes[i, 5].imshow(macro_out.cpu().squeeze())
+            axes[i, 4].imshow(macro.cpu().squeeze().numpy().transpose(1, 2, 0))
+            axes[i, 5].imshow(macro_out.cpu().squeeze().numpy().transpose(1, 2, 0))
             
             # Retirer les axes
             for ax in axes[i]:

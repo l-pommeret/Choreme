@@ -27,14 +27,16 @@ class MultiScaleImageDataset(Dataset):
         return micro, meso, macro
     
     def load_image(self, path):
-        img = Image.open(path)  # Suppression du convert('L') pour garder les couleurs
-        img_array = np.array(img).transpose(2, 0, 1) / 255.0  # Format (C, H, W) pour PyTorch
+        """Charge une image RGB et la normalise"""
+        img = Image.open(path)
+        img_array = np.array(img).transpose(2, 0, 1) / 255.0  # Format CHW pour PyTorch
         return torch.FloatTensor(img_array)
 
 class MultiScaleAutoencoder(nn.Module):
-    def __init__(self, scale_latent_dim=64, final_latent_dim=128):
+    def __init__(self, input_channels=3, scale_latent_dim=64, final_latent_dim=128):
         super(MultiScaleAutoencoder, self).__init__()
         
+        self.input_channels = input_channels
         self.scale_latent_dim = scale_latent_dim
         self.final_latent_dim = final_latent_dim
         
@@ -43,7 +45,7 @@ class MultiScaleAutoencoder(nn.Module):
         self.meso_encoder = self.create_encoder(scale_latent_dim)
         self.macro_encoder = self.create_encoder(scale_latent_dim)
         
-        # Fusion avec BatchNorm pour meilleure régularisation
+        # Fusion avec BatchNorm
         self.fusion = nn.Sequential(
             nn.Linear(scale_latent_dim * 3, final_latent_dim),
             nn.BatchNorm1d(final_latent_dim),
@@ -59,7 +61,7 @@ class MultiScaleAutoencoder(nn.Module):
     def create_encoder(self, latent_dim):
         return nn.Sequential(
             nn.Flatten(),
-            nn.Linear(3*64*64, 1024),  # 3 canaux RGB
+            nn.Linear(self.input_channels * 64 * 64, 1024),
             nn.BatchNorm1d(1024),
             nn.ReLU(),
             nn.Linear(1024, 512),
@@ -78,88 +80,26 @@ class MultiScaleAutoencoder(nn.Module):
             nn.Linear(512, 1024),
             nn.BatchNorm1d(1024),
             nn.ReLU(),
-            nn.Linear(1024, 3*64*64),  # 3 canaux RGB
+            nn.Linear(1024, self.input_channels * 64 * 64),
             nn.Sigmoid()
         )
     
     def forward(self, micro, meso, macro):
+        # Encodage
         micro_encoded = self.micro_encoder(micro)
         meso_encoded = self.meso_encoder(meso)
         macro_encoded = self.macro_encoder(macro)
         
+        # Fusion
         combined = torch.cat([micro_encoded, meso_encoded, macro_encoded], dim=1)
         latent = self.fusion(combined)
         
-        micro_decoded = self.micro_decoder(latent).view(-1, 3, 64, 64)  # Format (B, C, H, W)
-        meso_decoded = self.meso_decoder(latent).view(-1, 3, 64, 64)
-        macro_decoded = self.macro_decoder(latent).view(-1, 3, 64, 64)
+        # Décodage
+        micro_decoded = self.micro_decoder(latent).view(-1, self.input_channels, 64, 64)
+        meso_decoded = self.meso_decoder(latent).view(-1, self.input_channels, 64, 64)
+        macro_decoded = self.macro_decoder(latent).view(-1, self.input_channels, 64, 64)
         
         return micro_decoded, meso_decoded, macro_decoded, latent
-
-def compute_loss(outputs, targets, weights, latent, l1_lambda=1e-5, l2_lambda=1e-4):
-    micro_out, meso_out, macro_out, latent = outputs
-    micro_target, meso_target, macro_target = targets
-    
-    criterion = nn.MSELoss()
-    
-    # Pertes de reconstruction pondérées
-    micro_loss = criterion(micro_out, micro_target) * weights['micro']
-    meso_loss = criterion(meso_out, meso_target) * weights['meso']
-    macro_loss = criterion(macro_out, macro_target) * weights['macro']
-    
-    reconstruction_loss = micro_loss + meso_loss + macro_loss
-    
-    # Régularisation L1 sur l'espace latent
-    l1_loss = l1_lambda * torch.abs(latent).mean()
-    
-    # Régularisation L2 sur l'espace latent
-    l2_loss = l2_lambda * torch.square(latent).mean()
-    
-    return reconstruction_loss + l1_loss + l2_loss, {
-        'reconstruction': reconstruction_loss.item(),
-        'l1': l1_loss.item(),
-        'l2': l2_loss.item()
-    }
-
-def evaluate_model(model, dataloader, weights, device):
-    model.eval()
-    total_loss = 0
-    with torch.no_grad():
-        for micro, meso, macro in dataloader:
-            micro, meso, macro = micro.to(device), meso.to(device), macro.to(device)
-            outputs = model(micro, meso, macro)
-            loss, _ = compute_loss(outputs, (micro, meso, macro), weights, outputs[3])
-            total_loss += loss.item()
-    return total_loss / len(dataloader)
-
-def visualize_reconstructions(model, dataloader, device, epoch):
-    model.eval()
-    with torch.no_grad():
-        micro, meso, macro = next(iter(dataloader))
-        micro, meso, macro = micro.to(device), meso.to(device), macro.to(device)
-        micro_out, meso_out, macro_out, _ = model(micro, meso, macro)
-        
-        # Visualiser la première image du batch
-        fig, axes = plt.subplots(3, 2, figsize=(10, 15))
-        
-        # Conversion pour l'affichage (C,H,W) -> (H,W,C)
-        axes[0, 0].imshow(micro[0].cpu().numpy().transpose(1, 2, 0))
-        axes[0, 0].set_title('Original Micro')
-        axes[0, 1].imshow(micro_out[0].cpu().detach().numpy().transpose(1, 2, 0))
-        axes[0, 1].set_title('Reconstructed Micro')
-        
-        axes[1, 0].imshow(meso[0].cpu().numpy().transpose(1, 2, 0))
-        axes[1, 0].set_title('Original Meso')
-        axes[1, 1].imshow(meso_out[0].cpu().detach().numpy().transpose(1, 2, 0))
-        axes[1, 1].set_title('Reconstructed Meso')
-        
-        axes[2, 0].imshow(macro[0].cpu().numpy().transpose(1, 2, 0))
-        axes[2, 0].set_title('Original Macro')
-        axes[2, 1].imshow(macro_out[0].cpu().detach().numpy().transpose(1, 2, 0))
-        axes[2, 1].set_title('Reconstructed Macro')
-        
-        plt.savefig(f'reconstructions_epoch_{epoch}.png')
-        plt.close()
 
 def train_model(data_dir, num_epochs=50):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -181,7 +121,7 @@ def train_model(data_dir, num_epochs=50):
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
     
     # Modèle et optimisation
-    model = MultiScaleAutoencoder().to(device)
+    model = MultiScaleAutoencoder(input_channels=3).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5)
     
@@ -220,10 +160,6 @@ def train_model(data_dir, num_epochs=50):
         print(f'Test Loss: {avg_test_loss:.6f}')
         print(f'Loss Components: {loss_components}')
         
-        # Visualisation périodique
-        if (epoch + 1) % 5 == 0:
-            visualize_reconstructions(model, test_loader, device, epoch + 1)
-        
         # Learning rate scheduling
         scheduler.step(avg_test_loss)
         
@@ -236,31 +172,43 @@ def train_model(data_dir, num_epochs=50):
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': avg_train_loss,
                 'test_loss': avg_test_loss,
-            }, 'best_model.pth')
-            
-        # Sauvegarde périodique
-        if (epoch + 1) % 10 == 0:
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'train_loss': avg_train_loss,
-                'test_loss': avg_test_loss,
-                'train_losses': train_losses,
-                'test_losses': test_losses,
-            }, f'checkpoint_epoch_{epoch+1}.pth')
-    
-    # Tracé des courbes d'apprentissage
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label='Train Loss')
-    plt.plot(test_losses, label='Test Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.savefig('learning_curves.png')
-    plt.close()
+            }, 'best_model_rgb.pth')
     
     return model, train_losses, test_losses
 
+def compute_loss(outputs, targets, weights, latent, l1_lambda=1e-5, l2_lambda=1e-4):
+    micro_out, meso_out, macro_out, latent = outputs
+    micro_target, meso_target, macro_target = targets
+    
+    criterion = nn.MSELoss()
+    
+    # Pertes de reconstruction pondérées
+    micro_loss = criterion(micro_out, micro_target) * weights['micro']
+    meso_loss = criterion(meso_out, meso_target) * weights['meso']
+    macro_loss = criterion(macro_out, macro_target) * weights['macro']
+    
+    reconstruction_loss = micro_loss + meso_loss + macro_loss
+    
+    # Régularisation
+    l1_loss = l1_lambda * torch.abs(latent).mean()
+    l2_loss = l2_lambda * torch.square(latent).mean()
+    
+    return reconstruction_loss + l1_loss + l2_loss, {
+        'reconstruction': reconstruction_loss.item(),
+        'l1': l1_loss.item(),
+        'l2': l2_loss.item()
+    }
+
+def evaluate_model(model, dataloader, weights, device):
+    model.eval()
+    total_loss = 0
+    with torch.no_grad():
+        for micro, meso, macro in dataloader:
+            micro, meso, macro = micro.to(device), meso.to(device), macro.to(device)
+            outputs = model(micro, meso, macro)
+            loss, _ = compute_loss(outputs, (micro, meso, macro), weights, outputs[3])
+            total_loss += loss.item()
+    return total_loss / len(dataloader)
+
 if __name__ == "__main__":
-    model, train_losses, test_losses = train_model("data", num_epochs=5)
+    model, train_losses, test_losses = train_model("data", num_epochs=50)

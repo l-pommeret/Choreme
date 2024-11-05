@@ -187,9 +187,9 @@ def train_model(data_dir, num_epochs=50, batch_size=64):
     print(f"Using device: {device}")
     
     scale_weights = {
-        'micro': 0.4,
-        'meso': 0.4,
-        'macro': 0.2
+        'micro': 0.8,
+        'meso': 0.1,
+        'macro': 0.1
     }
     
     train_dataset = MultiScaleImageDataset(data_dir, 'train')

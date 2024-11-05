@@ -219,4 +219,4 @@ def build_france_dataset(sample_size=100, test_split=0.2):
     print(f"Taux de succès: {stats['success_rate']:.2%}")
 
 if __name__ == "__main__":
-    build_france_dataset(sample_size=10, test_split=0.2)
+    build_france_dataset(sample_size=100000, test_split=0.01)

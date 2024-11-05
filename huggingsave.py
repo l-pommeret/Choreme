@@ -144,6 +144,6 @@ if __name__ == "__main__":
     upload_dataset_and_model_to_hf(
         data_dir="data",
         model_path="best_model_rgb.pth",  # Chemin vers votre modèle entraîné
-        hf_token="hf_votreTOKENici",  # Remplacez par votre token
-        repo_id="votre-nom/nom-du-dataset"  # Remplacez par votre nom d'utilisateur et le nom souhaité pour le dataset
+        hf_token="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",  # Remplacez par votre token
+        repo_id="Zual/choreme" # Remplacez par votre nom d'utilisateur et le nom souhaité pour le dataset
     )

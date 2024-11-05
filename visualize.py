@@ -1,151 +1,132 @@
 import torch
-import numpy as np
-from PIL import Image
-import matplotlib.pyplot as plt
-import random
-import os
-from autoencoder import MultiScaleAutoencoder, MultiScaleImageDataset
 from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+import numpy as np
+from autoencoder import MultiScaleCNNAutoencoder, MultiScaleImageDataset  # Importer depuis votre fichier model.py
+import os
 
-def load_checkpoint(model, checkpoint_path):
-    """Charge un modèle sauvegardé"""
-    checkpoint = torch.load(checkpoint_path, weights_only=True)
+def plot_sample(original, reconstructed, titles, save_path):
+    """Plot une comparaison côte à côte"""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+    
+    # Original
+    ax1.imshow(original)
+    ax1.set_title(titles[0])
+    ax1.axis('off')
+    
+    # Reconstruction
+    ax2.imshow(reconstructed)
+    ax2.set_title(titles[1])
+    ax2.axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+def visualize_results():
+    # Configuration
+    data_dir = "data"
+    save_dir = "results"
+    model_path = "best_model.pth"
+    
+    # Créer le dossier de résultats s'il n'existe pas
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Charger le modèle
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = MultiScaleCNNAutoencoder().to(device)
+    checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
-    return model, checkpoint['epoch'], checkpoint['test_loss']
-
-def prepare_image_for_display(tensor):
-    """Prépare un tenseur RGB pour l'affichage"""
-    img = tensor.cpu().numpy().transpose(1, 2, 0)
-    return np.clip(img, 0, 1)
-
-def visualize_random_samples(model, test_loader, device, num_samples=5):
-    """Visualise des échantillons aléatoires et leurs reconstructions en RGB"""
     model.eval()
     
-    dataset_size = len(test_loader.dataset)
-    indices = random.sample(range(dataset_size), min(num_samples, dataset_size))
+    # Charger quelques données de test
+    dataset = MultiScaleImageDataset(data_dir, subset='test')
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
     
+    # Sélectionner 3 échantillons
     with torch.no_grad():
-        fig, axes = plt.subplots(num_samples, 6, figsize=(20, 4*num_samples))
-        fig.suptitle('Comparaison Original vs Reconstruction (RGB)', fontsize=16)
-        
-        cols = ['Micro Original', 'Micro Reconst.', 
-                'Meso Original', 'Meso Reconst.',
-                'Macro Original', 'Macro Reconst.']
-        for ax, col in zip(axes[0], cols):
-            ax.set_title(col)
-        
-        for i, idx in enumerate(indices):
-            # Chargement des images
-            micro, meso, macro = test_loader.dataset[idx]
-            
-            # Préparation pour le modèle
-            micro = micro.unsqueeze(0).to(device)
-            meso = meso.unsqueeze(0).to(device)
-            macro = macro.unsqueeze(0).to(device)
-            
-            # Génération des reconstructions
-            micro_out, meso_out, macro_out, latent = model(micro, meso, macro)
-            
-            # Préparation pour l'affichage
-            pairs = [
-                (micro.squeeze(), micro_out.squeeze()),
-                (meso.squeeze(), meso_out.squeeze()),
-                (macro.squeeze(), macro_out.squeeze())
-            ]
-            
-            # Affichage des images
-            for j, (orig, recon) in enumerate(pairs):
-                axes[i, j*2].imshow(prepare_image_for_display(orig))
-                axes[i, j*2+1].imshow(prepare_image_for_display(recon))
-                axes[i, j*2].axis('off')
-                axes[i, j*2+1].axis('off')
-            
-            # Calcul et affichage des erreurs
-            errors = {
-                'micro': torch.nn.functional.mse_loss(micro, micro_out).item(),
-                'meso': torch.nn.functional.mse_loss(meso, meso_out).item(),
-                'macro': torch.nn.functional.mse_loss(macro, macro_out).item()
-            }
-            
-            axes[i, 0].set_ylabel(
-                f'Sample {i+1}\n' + \
-                f'Micro Err: {errors["micro"]:.4f}\n' + \
-                f'Meso Err: {errors["meso"]:.4f}\n' + \
-                f'Macro Err: {errors["macro"]:.4f}'
-            )
-        
-        plt.tight_layout()
-        plt.savefig('random_reconstructions_rgb.png', dpi=300, bbox_inches='tight')
-        plt.close()
-
-def visualize_latent_space(model, test_loader, device, n_components=2):
-    """Visualise l'espace latent en 2D avec PCA"""
-    from sklearn.decomposition import PCA
-    
-    model.eval()
-    latent_vectors = []
-    
-    with torch.no_grad():
-        for micro, meso, macro in test_loader:
+        for i, (micro, meso, macro) in enumerate(dataloader):
+            if i >= 3:  # Visualiser seulement 3 échantillons
+                break
+                
+            # Déplacer les données sur le GPU
             micro = micro.to(device)
             meso = meso.to(device)
             macro = macro.to(device)
             
-            _, _, _, latent = model(micro, meso, macro)
-            latent_vectors.append(latent.cpu().numpy())
-    
-    latent_vectors = np.concatenate(latent_vectors, axis=0)
-    
-    # Application de PCA
-    pca = PCA(n_components=n_components)
-    latent_2d = pca.fit_transform(latent_vectors)
-    
-    # Visualisation
-    plt.figure(figsize=(10, 10))
-    scatter = plt.scatter(latent_2d[:, 0], latent_2d[:, 1], 
-                         c=np.sum(latent_vectors**2, axis=1),
-                         cmap='viridis', 
-                         alpha=0.6)
-    plt.colorbar(scatter, label='Norme du vecteur latent')
-    plt.title('Projection 2D de l\'espace latent (PCA)')
-    plt.xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%} var.)')
-    plt.ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%} var.)')
-    plt.savefig('latent_space_rgb.png', dpi=300, bbox_inches='tight')
-    plt.close()
-
-def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Utilisation de: {device}")
-    
-    data_dir = "data"
-    checkpoint_path = "best_model_rgb.pth"  # Retour au nom original du checkpoint
-    
-    try:
-        # Chargement du modèle sans input_channels
-        model = MultiScaleAutoencoder().to(device)
-        model, epoch, test_loss = load_checkpoint(model, checkpoint_path)
-        print(f"Modèle chargé de l'époque {epoch} avec loss de test {test_loss:.6f}")
-        
-        # Chargement des données
-        test_dataset = MultiScaleImageDataset(data_dir, 'test')
-        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-        
-        # Génération des visualisations
-        print("\nGénération des reconstructions RGB...")
-        visualize_random_samples(model, test_loader, device, num_samples=5)
-        
-        print("\nGénération de la visualisation de l'espace latent...")
-        visualize_latent_space(model, test_loader, device)
-        
-        print("\nVisualisation terminée ! Les images ont été sauvegardées :")
-        print("- random_reconstructions_rgb.png")
-        print("- latent_space_rgb.png")
-        
-    except Exception as e:
-        print(f"\nUne erreur s'est produite lors de la visualisation:")
-        print(f"{str(e)}")
-        raise
+            # Obtenir les reconstructions
+            micro_recon, meso_recon, macro_recon, _ = model(micro, meso, macro)
+            
+            # Convertir en numpy et ajuster le format
+            micro = micro[0].cpu().numpy().transpose(1, 2, 0)
+            meso = meso[0].cpu().numpy().transpose(1, 2, 0)
+            macro = macro[0].cpu().numpy().transpose(1, 2, 0)
+            
+            micro_recon = micro_recon[0].cpu().numpy().transpose(1, 2, 0)
+            meso_recon = meso_recon[0].cpu().numpy().transpose(1, 2, 0)
+            macro_recon = macro_recon[0].cpu().numpy().transpose(1, 2, 0)
+            
+            # Sauvegarder les comparaisons
+            plot_sample(micro, micro_recon, 
+                       ['Original Micro', 'Reconstructed Micro'],
+                       f'{save_dir}/sample_{i+1}_micro.png')
+            
+            plot_sample(meso, meso_recon,
+                       ['Original Meso', 'Reconstructed Meso'],
+                       f'{save_dir}/sample_{i+1}_meso.png')
+            
+            plot_sample(macro, macro_recon,
+                       ['Original Macro', 'Reconstructed Macro'],
+                       f'{save_dir}/sample_{i+1}_macro.png')
+            
+            # Créer une visualisation combinée
+            fig, axes = plt.subplots(3, 2, figsize=(12, 18))
+            plt.suptitle(f'Sample {i+1} - All Scales Comparison', size=16)
+            
+            # Première rangée : Micro
+            axes[0,0].imshow(micro)
+            axes[0,0].set_title('Original Micro')
+            axes[0,0].axis('off')
+            axes[0,1].imshow(micro_recon)
+            axes[0,1].set_title('Reconstructed Micro')
+            axes[0,1].axis('off')
+            
+            # Deuxième rangée : Meso
+            axes[1,0].imshow(meso)
+            axes[1,0].set_title('Original Meso')
+            axes[1,0].axis('off')
+            axes[1,1].imshow(meso_recon)
+            axes[1,1].set_title('Reconstructed Meso')
+            axes[1,1].axis('off')
+            
+            # Troisième rangée : Macro
+            axes[2,0].imshow(macro)
+            axes[2,0].set_title('Original Macro')
+            axes[2,0].axis('off')
+            axes[2,1].imshow(macro_recon)
+            axes[2,1].set_title('Reconstructed Macro')
+            axes[2,1].axis('off')
+            
+            plt.tight_layout()
+            plt.savefig(f'{save_dir}/sample_{i+1}_all_scales.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # Calculer et afficher les métriques
+            def compute_metrics(orig, recon):
+                mse = np.mean((orig - recon) ** 2)
+                psnr = 20 * np.log10(1.0 / np.sqrt(mse))
+                return mse, psnr
+            
+            micro_mse, micro_psnr = compute_metrics(micro, micro_recon)
+            meso_mse, meso_psnr = compute_metrics(meso, meso_recon)
+            macro_mse, macro_psnr = compute_metrics(macro, macro_recon)
+            
+            print(f"\nSample {i+1} Metrics:")
+            print(f"Micro - MSE: {micro_mse:.6f}, PSNR: {micro_psnr:.2f} dB")
+            print(f"Meso  - MSE: {meso_mse:.6f}, PSNR: {meso_psnr:.2f} dB")
+            print(f"Macro - MSE: {macro_mse:.6f}, PSNR: {macro_psnr:.2f} dB")
 
 if __name__ == "__main__":
-    main()
+    print("Generating visualizations...")
+    visualize_results()
+    print("\nDone! Check the 'results' folder for the visualizations.")

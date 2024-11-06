@@ -185,7 +185,7 @@ class MultiScaleCNNAutoencoder(nn.Module):
         
         return micro_decoded, meso_decoded, macro_decoded, latent
 
-def compute_loss(outputs, targets, weights, latent, l1_lambda=1e-5, l2_lambda=1e-4):
+def compute_loss(outputs, targets, weights, latent, l1_lambda=1e-4, l2_lambda=1e-3):  # Augmenté les lambdas
     micro_out, meso_out, macro_out, latent = outputs
     micro_target, meso_target, macro_target = targets
     

@@ -54,21 +54,13 @@ class ConvBlock(nn.Module):
 class ConvEncoder(nn.Module):
     def __init__(self, scale_latent_dim):
         super().__init__()
-        # Doubled depth with more channels
         self.conv1 = ConvBlock(3, 64)
         self.conv2 = ConvBlock(64, 128)
         self.conv3 = ConvBlock(128, 256)
-        self.conv4 = ConvBlock(256, 512)
-        self.conv5 = ConvBlock(512, 768)
-        self.conv6 = ConvBlock(768, 1024)
         
         self.flatten = nn.Flatten()
         self.fc = nn.Sequential(
-            nn.Linear(1024 * 4 * 4, 2048),  # Modified for deeper network
-            nn.LayerNorm(2048),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.1),
-            nn.Linear(2048, 1024),
+            nn.Linear(256 * 8 * 8, 1024),
             nn.LayerNorm(1024),
             nn.LeakyReLU(0.2),
             nn.Dropout(0.1),
@@ -78,15 +70,11 @@ class ConvEncoder(nn.Module):
         
     def forward(self, x):
         x = self.conv1(x)
-        x = F.max_pool2d(x, 2)  # 32x32
+        x = F.max_pool2d(x, 2)
         x = self.conv2(x)
-        x = F.max_pool2d(x, 2)  # 16x16
+        x = F.max_pool2d(x, 2)
         x = self.conv3(x)
-        x = F.max_pool2d(x, 2)  # 8x8
-        x = self.conv4(x)
-        x = F.max_pool2d(x, 2)  # 4x4
-        x = self.conv5(x)
-        x = self.conv6(x)
+        x = F.max_pool2d(x, 2)
         
         x = self.flatten(x)
         x = self.fc(x)
@@ -100,46 +88,34 @@ class ConvDecoder(nn.Module):
             nn.LayerNorm(1024),
             nn.LeakyReLU(0.2),
             nn.Dropout(0.1),
-            nn.Linear(1024, 2048),
-            nn.LayerNorm(2048),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.1),
-            nn.Linear(2048, 1024 * 4 * 4),
-            nn.LayerNorm(1024 * 4 * 4),
+            nn.Linear(1024, 256 * 8 * 8),
+            nn.LayerNorm(256 * 8 * 8),
             nn.LeakyReLU(0.2)
         )
         
-        self.conv1 = ConvBlock(1024, 768)
-        self.conv2 = ConvBlock(768, 512)
-        self.conv3 = ConvBlock(512, 256)
-        self.conv4 = ConvBlock(256, 128)
-        self.conv5 = ConvBlock(128, 64)
-        self.conv6 = ConvBlock(64, 32)
+        self.conv1 = ConvBlock(256, 128)
+        self.conv2 = ConvBlock(128, 64)
+        self.conv3 = ConvBlock(64, 32)
         self.final_conv = nn.Conv2d(32, 3, kernel_size=1)
         
     def forward(self, x):
         x = self.fc(x)
-        x = x.view(-1, 1024, 4, 4)
+        x = x.view(-1, 256, 8, 8)
         
+        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
         x = self.conv1(x)
+        
+        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
         x = self.conv2(x)
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)  # 8x8
         
+        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
         x = self.conv3(x)
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)  # 16x16
         
-        x = self.conv4(x)
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)  # 32x32
-        
-        x = self.conv5(x)
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)  # 64x64
-        
-        x = self.conv6(x)
         x = self.final_conv(x)
         return torch.sigmoid(x)
 
 class MultiScaleCNNAutoencoder(nn.Module):
-    def __init__(self, scale_latent_dim=2048, final_latent_dim=512):  # Increased initial latent dim
+    def __init__(self, scale_latent_dim=1024, final_latent_dim=512):
         super().__init__()
         
         self.micro_encoder = ConvEncoder(scale_latent_dim)
@@ -148,17 +124,13 @@ class MultiScaleCNNAutoencoder(nn.Module):
         
         self.attention = nn.MultiheadAttention(
             embed_dim=scale_latent_dim,
-            num_heads=16,  # Increased number of heads
+            num_heads=8,
             batch_first=True,
             dropout=0.1
         )
         
         self.fusion = nn.Sequential(
-            nn.Linear(scale_latent_dim * 3, scale_latent_dim),
-            nn.LayerNorm(scale_latent_dim),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.1),
-            nn.Linear(scale_latent_dim, final_latent_dim),
+            nn.Linear(scale_latent_dim * 3, final_latent_dim),
             nn.LayerNorm(final_latent_dim),
             nn.LeakyReLU(0.2),
             nn.Dropout(0.1)
@@ -185,7 +157,7 @@ class MultiScaleCNNAutoencoder(nn.Module):
         
         return micro_decoded, meso_decoded, macro_decoded, latent
 
-def compute_loss(outputs, targets, weights, latent, l1_lambda=1e-4, l2_lambda=1e-3):  # Augmenté les lambdas
+def compute_loss(outputs, targets, weights, latent, l1_lambda=1e-5, l2_lambda=1e-4):
     micro_out, meso_out, macro_out, latent = outputs
     micro_target, meso_target, macro_target = targets
     

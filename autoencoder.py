@@ -37,90 +37,72 @@ class MultiScaleImageDataset(Dataset):
         img_array = np.array(img).transpose(2, 0, 1) / 255.0
         return torch.FloatTensor(img_array)
 
-class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
+class DenseEncoder(nn.Module):
+    def __init__(self, input_dim, scale_latent_dim):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        
-    def forward(self, x):
-        x = F.leaky_relu(self.bn1(self.conv1(x)), 0.2)
-        identity = x
-        x = F.leaky_relu(self.bn2(self.conv2(x)), 0.2)
-        return x + identity
-
-class ConvEncoder(nn.Module):
-    def __init__(self, scale_latent_dim):
-        super().__init__()
-        self.conv1 = ConvBlock(3, 64)
-        self.conv2 = ConvBlock(64, 128)
-        self.conv3 = ConvBlock(128, 256)
-        
         self.flatten = nn.Flatten()
-        self.fc = nn.Sequential(
-            nn.Linear(256 * 8 * 8, 1024),
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 4096),
+            nn.LayerNorm(4096),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.1),
+            
+            nn.Linear(4096, 2048),
+            nn.LayerNorm(2048),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.1),
+            
+            nn.Linear(2048, 1024),
             nn.LayerNorm(1024),
             nn.LeakyReLU(0.2),
             nn.Dropout(0.1),
+            
             nn.Linear(1024, scale_latent_dim),
             nn.LayerNorm(scale_latent_dim)
         )
         
     def forward(self, x):
-        x = self.conv1(x)
-        x = F.max_pool2d(x, 2)
-        x = self.conv2(x)
-        x = F.max_pool2d(x, 2)
-        x = self.conv3(x)
-        x = F.max_pool2d(x, 2)
-        
         x = self.flatten(x)
-        x = self.fc(x)
-        return x
+        return self.encoder(x)
 
-class ConvDecoder(nn.Module):
-    def __init__(self, latent_dim):
+class DenseDecoder(nn.Module):
+    def __init__(self, latent_dim, output_shape):
         super().__init__()
-        self.fc = nn.Sequential(
+        self.output_shape = output_shape
+        output_dim = output_shape[0] * output_shape[1] * output_shape[2]
+        
+        self.decoder = nn.Sequential(
             nn.Linear(latent_dim, 1024),
             nn.LayerNorm(1024),
             nn.LeakyReLU(0.2),
             nn.Dropout(0.1),
-            nn.Linear(1024, 256 * 8 * 8),
-            nn.LayerNorm(256 * 8 * 8),
-            nn.LeakyReLU(0.2)
+            
+            nn.Linear(1024, 2048),
+            nn.LayerNorm(2048),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.1),
+            
+            nn.Linear(2048, 4096),
+            nn.LayerNorm(4096),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.1),
+            
+            nn.Linear(4096, output_dim),
+            nn.Sigmoid()
         )
         
-        self.conv1 = ConvBlock(256, 128)
-        self.conv2 = ConvBlock(128, 64)
-        self.conv3 = ConvBlock(64, 32)
-        self.final_conv = nn.Conv2d(32, 3, kernel_size=1)
-        
     def forward(self, x):
-        x = self.fc(x)
-        x = x.view(-1, 256, 8, 8)
-        
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
-        x = self.conv1(x)
-        
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
-        x = self.conv2(x)
-        
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
-        x = self.conv3(x)
-        
-        x = self.final_conv(x)
-        return torch.sigmoid(x)
+        x = self.decoder(x)
+        return x.view(-1, *self.output_shape)
 
-class MultiScaleCNNAutoencoder(nn.Module):
-    def __init__(self, scale_latent_dim=1024, final_latent_dim=512):
+class MultiScaleDenseAutoencoder(nn.Module):
+    def __init__(self, input_shape=(3, 64, 64), scale_latent_dim=1024, final_latent_dim=512):
         super().__init__()
+        input_dim = input_shape[0] * input_shape[1] * input_shape[2]
         
-        self.micro_encoder = ConvEncoder(scale_latent_dim)
-        self.meso_encoder = ConvEncoder(scale_latent_dim)
-        self.macro_encoder = ConvEncoder(scale_latent_dim)
+        self.micro_encoder = DenseEncoder(input_dim, scale_latent_dim)
+        self.meso_encoder = DenseEncoder(input_dim, scale_latent_dim)
+        self.macro_encoder = DenseEncoder(input_dim, scale_latent_dim)
         
         self.attention = nn.MultiheadAttention(
             embed_dim=scale_latent_dim,
@@ -136,9 +118,9 @@ class MultiScaleCNNAutoencoder(nn.Module):
             nn.Dropout(0.1)
         )
         
-        self.micro_decoder = ConvDecoder(final_latent_dim)
-        self.meso_decoder = ConvDecoder(final_latent_dim)
-        self.macro_decoder = ConvDecoder(final_latent_dim)
+        self.micro_decoder = DenseDecoder(final_latent_dim, input_shape)
+        self.meso_decoder = DenseDecoder(final_latent_dim, input_shape)
+        self.macro_decoder = DenseDecoder(final_latent_dim, input_shape)
         
     def forward(self, micro, meso, macro):
         micro_encoded = self.micro_encoder(micro)
@@ -188,7 +170,7 @@ def train_model(data_dir, num_epochs=50, batch_size=64):
     
     scale_weights = {
         'micro': 1,
-        'meso': 0,  # Modifié pour activer l'apprentissage sur toutes les échelles
+        'meso': 0,
         'macro': 0
     }
     
@@ -212,7 +194,7 @@ def train_model(data_dir, num_epochs=50, batch_size=64):
         persistent_workers=True
     )
     
-    model = MultiScaleCNNAutoencoder().to(device)
+    model = MultiScaleDenseAutoencoder().to(device)
     optimizer = optim.AdamW(
         model.parameters(),
         lr=1e-4,

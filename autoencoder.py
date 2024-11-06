@@ -3,18 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
-import torchvision.models as models
 import os
 from PIL import Image
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-import gc
-
-# Optimisation de la mémoire CUDA
-torch.cuda.empty_cache()
-if torch.cuda.is_available():
-    torch.backends.cudnn.benchmark = True
 
 class MultiScaleImageDataset(Dataset):
     def __init__(self, data_dir, subset='train', transform=None):
@@ -44,158 +37,56 @@ class MultiScaleImageDataset(Dataset):
         img_array = np.array(img).transpose(2, 0, 1) / 255.0
         return torch.FloatTensor(img_array)
 
-class ResidualBlock(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        hidden_dim = dim
-        self.layers = nn.Sequential(
-            nn.Linear(dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, dim),
-            nn.LayerNorm(dim)
-        )
-        
-    def forward(self, x):
-        return x + 0.1 * self.layers(x)  # Scaled residual connection
-
-class EnhancedDenseEncoder(nn.Module):
+class DenseEncoder(nn.Module):
     def __init__(self, input_dim, scale_latent_dim):
         super().__init__()
         self.flatten = nn.Flatten()
-        
-        # Dimensions réduites
-        self.encoder_layers = nn.ModuleList([
-            nn.Linear(input_dim, 1024),
-            nn.Linear(1024, 512),
-            nn.Linear(512, scale_latent_dim)
-        ])
-        
-        self.norms = nn.ModuleList([
-            nn.LayerNorm(1024),
-            nn.LayerNorm(512),
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 2048),
+            nn.LayerNorm(2048),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            
+            nn.Linear(2048, scale_latent_dim),
             nn.LayerNorm(scale_latent_dim)
-        ])
-        
-        self.residual_blocks = nn.ModuleList([
-            ResidualBlock(1024),
-            ResidualBlock(512),
-            ResidualBlock(scale_latent_dim)
-        ])
+        )
         
     def forward(self, x):
-        features = []
         x = self.flatten(x)
-        
-        for layer, norm, res in zip(self.encoder_layers, self.norms, self.residual_blocks):
-            x = layer(x)
-            x = norm(x)
-            x = F.gelu(x)
-            x = res(x)
-            features.append(x)
-            
-        return x, features
+        return self.encoder(x)
 
-class EnhancedDenseDecoder(nn.Module):
-    def __init__(self, latent_dim, output_shape, encoder_features_dims):
+class DenseDecoder(nn.Module):
+    def __init__(self, latent_dim, output_shape):
         super().__init__()
         self.output_shape = output_shape
         output_dim = output_shape[0] * output_shape[1] * output_shape[2]
         
-        # Dimensions réduites
-        self.decoder_layers = nn.ModuleList([
-            nn.Linear(latent_dim, 512),
-            nn.Linear(512, 1024),
-            nn.Linear(1024, output_dim)
-        ])
-        
-        self.norms = nn.ModuleList([
-            nn.LayerNorm(512),
-            nn.LayerNorm(1024),
-            nn.LayerNorm(output_dim)
-        ])
-        
-        self.residual_blocks = nn.ModuleList([
-            ResidualBlock(512),
-            ResidualBlock(1024),
-            ResidualBlock(output_dim)
-        ])
-        
-        # Fusion layers for skip connections
-        self.fusion_layers = nn.ModuleList([
-            nn.Linear(dim * 2, dim) for dim in [512, 1024, output_dim]
-        ])
-        
-    def forward(self, x, encoder_features):
-        for i, (layer, norm, res) in enumerate(zip(self.decoder_layers, self.norms, self.residual_blocks)):
-            x = layer(x)
-            x = norm(x)
-            x = F.gelu(x)
-            x = res(x)
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 2048),
+            nn.LayerNorm(2048),
+            nn.GELU(),
+            nn.Dropout(0.1),
             
-            if i < len(encoder_features):
-                fusion_input = torch.cat([x, encoder_features[-(i+1)]], dim=1)
-                x = self.fusion_layers[i](fusion_input)
+            nn.Linear(2048, output_dim),
+            nn.Sigmoid()
+        )
         
-        return torch.sigmoid(x.view(-1, *self.output_shape))
+    def forward(self, x):
+        x = self.decoder(x)
+        return x.view(-1, *self.output_shape)
 
-class LightPerceptualLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-        vgg = models.vgg16(pretrained=True).features[:16].eval()  # Utilise seulement les premières couches
-        self.slices = nn.ModuleList([
-            nn.Sequential(*list(vgg.children())[:4]),   # relu1_2
-            nn.Sequential(*list(vgg.children())[4:9]),  # relu2_2
-        ])
-        
-        for param in self.parameters():
-            param.requires_grad = False
-            
-        self.register_buffer('mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
-        self.register_buffer('std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
-        
-    def forward(self, x, target):
-        if x.shape[1] != 3:
-            x = x.repeat(1, 3, 1, 1)
-            target = target.repeat(1, 3, 1, 1)
-            
-        x = (x - self.mean) / self.std
-        target = (target - self.mean) / self.std
-        
-        perceptual_loss = 0
-        style_loss = 0
-        
-        for slice in self.slices:
-            x = slice(x)
-            with torch.no_grad():
-                target = slice(target)
-                
-            perceptual_loss += F.mse_loss(x, target)
-            
-            # Gram matrix pour la perte de style
-            b, c, h, w = x.size()
-            x_flat = x.view(b, c, -1)
-            target_flat = target.view(b, c, -1)
-            
-            x_gram = torch.bmm(x_flat, x_flat.transpose(1, 2)) / (c * h * w)
-            target_gram = torch.bmm(target_flat, target_flat.transpose(1, 2)) / (c * h * w)
-            style_loss += F.mse_loss(x_gram, target_gram)
-            
-        return perceptual_loss, style_loss
-
-class EnhancedMultiScaleAutoencoder(nn.Module):
-    def __init__(self, input_shape=(3, 64, 64), scale_latent_dim=256, final_latent_dim=128):
+class MultiScaleDenseAutoencoder(nn.Module):
+    def __init__(self, input_shape=(3, 64, 64), scale_latent_dim=512, final_latent_dim=256):
         super().__init__()
         input_dim = input_shape[0] * input_shape[1] * input_shape[2]
-        encoder_features_dims = [1024, 512, scale_latent_dim]
         
-        self.micro_encoder = EnhancedDenseEncoder(input_dim, scale_latent_dim)
-        self.meso_encoder = EnhancedDenseEncoder(input_dim, scale_latent_dim)
-        self.macro_encoder = EnhancedDenseEncoder(input_dim, scale_latent_dim)
+        self.micro_encoder = DenseEncoder(input_dim, scale_latent_dim)
+        self.meso_encoder = DenseEncoder(input_dim, scale_latent_dim)
+        self.macro_encoder = DenseEncoder(input_dim, scale_latent_dim)
         
         self.attention = nn.MultiheadAttention(
             embed_dim=scale_latent_dim,
-            num_heads=4,  # Réduit de 8 à 4
+            num_heads=8,
             batch_first=True,
             dropout=0.1
         )
@@ -204,17 +95,17 @@ class EnhancedMultiScaleAutoencoder(nn.Module):
             nn.Linear(scale_latent_dim * 3, final_latent_dim),
             nn.LayerNorm(final_latent_dim),
             nn.GELU(),
-            ResidualBlock(final_latent_dim)
+            nn.Dropout(0.1)
         )
         
-        self.micro_decoder = EnhancedDenseDecoder(final_latent_dim, input_shape, encoder_features_dims)
-        self.meso_decoder = EnhancedDenseDecoder(final_latent_dim, input_shape, encoder_features_dims)
-        self.macro_decoder = EnhancedDenseDecoder(final_latent_dim, input_shape, encoder_features_dims)
+        self.micro_decoder = DenseDecoder(final_latent_dim, input_shape)
+        self.meso_decoder = DenseDecoder(final_latent_dim, input_shape)
+        self.macro_decoder = DenseDecoder(final_latent_dim, input_shape)
         
     def forward(self, micro, meso, macro):
-        micro_encoded, micro_features = self.micro_encoder(micro)
-        meso_encoded, meso_features = self.meso_encoder(meso)
-        macro_encoded, macro_features = self.macro_encoder(macro)
+        micro_encoded = self.micro_encoder(micro)
+        meso_encoded = self.meso_encoder(meso)
+        macro_encoded = self.macro_encoder(macro)
         
         encodings = torch.stack([micro_encoded, meso_encoded, macro_encoded], dim=1)
         attended_encodings, _ = self.attention(encodings, encodings, encodings)
@@ -222,19 +113,55 @@ class EnhancedMultiScaleAutoencoder(nn.Module):
         
         latent = self.fusion(attended_encodings)
         
-        micro_decoded = self.micro_decoder(latent, micro_features)
-        meso_decoded = self.meso_decoder(latent, meso_features)
-        macro_decoded = self.macro_decoder(latent, macro_features)
+        micro_decoded = self.micro_decoder(latent)
+        meso_decoded = self.meso_decoder(latent)
+        macro_decoded = self.macro_decoder(latent)
         
         return micro_decoded, meso_decoded, macro_decoded, latent
 
-def train_model(data_dir, num_epochs=50, batch_size=32):  # Batch size réduit à 32
+def init_weights(m):
+    if isinstance(m, nn.Linear):
+        nn.init.kaiming_normal_(m.weight, nonlinearity='linear')
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+    elif isinstance(m, nn.LayerNorm):
+        nn.init.constant_(m.weight, 1)
+        nn.init.constant_(m.bias, 0)
+
+def compute_loss(outputs, targets, weights, latent, l1_lambda=1e-6, l2_lambda=1e-5):
+    micro_out, meso_out, macro_out, latent = outputs
+    micro_target, meso_target, macro_target = targets
+    
+    mse_criterion = nn.MSELoss()
+    
+    micro_loss = mse_criterion(micro_out, micro_target) * weights['micro']
+    meso_loss = mse_criterion(meso_out, meso_target) * weights['meso']
+    macro_loss = mse_criterion(macro_out, macro_target) * weights['macro']
+    
+    reconstruction_loss = micro_loss + meso_loss + macro_loss
+    
+    l1_loss = l1_lambda * torch.abs(latent).mean()
+    l2_loss = l2_lambda * torch.square(latent).mean()
+    
+    total_loss = reconstruction_loss + l1_loss + l2_loss
+    
+    return total_loss, {
+        'total': total_loss.item(),
+        'reconstruction': reconstruction_loss.item(),
+        'micro': micro_loss.item(),
+        'meso': meso_loss.item(),
+        'macro': macro_loss.item(),
+        'reg': (l1_loss + l2_loss).item()
+    }
+
+def train_model(data_dir, num_epochs=50, batch_size=64):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
+    # Augmentation du poids des échelles meso et macro
     scale_weights = {
         'micro': 1.0,
-        'meso': 0.8,
+        'meso': 0.8,  
         'macro': 0.6
     }
     
@@ -258,8 +185,8 @@ def train_model(data_dir, num_epochs=50, batch_size=32):  # Batch size réduit �
         persistent_workers=True
     )
     
-    model = EnhancedMultiScaleAutoencoder().to(device)
-    perceptual_loss_fn = LightPerceptualLoss().to(device)
+    model = MultiScaleDenseAutoencoder().to(device)
+    model.apply(init_weights)
     
     optimizer = optim.AdamW(
         model.parameters(),
@@ -278,7 +205,7 @@ def train_model(data_dir, num_epochs=50, batch_size=32):  # Batch size réduit �
         final_div_factor=1000
     )
     
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.cuda.amp.GradScaler()  # Pour mixed precision training
     best_test_loss = float('inf')
     train_losses = []
     test_losses = []
@@ -296,17 +223,10 @@ def train_model(data_dir, num_epochs=50, batch_size=32):  # Batch size réduit �
             
             with torch.cuda.amp.autocast():
                 outputs = model(micro, meso, macro)
-                perceptual_loss, style_loss = perceptual_loss_fn(outputs[0], micro)
-                
-                # Calcul des pertes de reconstruction
-                recon_loss = (
-                    F.l1_loss(outputs[0], micro) * scale_weights['micro'] +
-                    F.l1_loss(outputs[1], meso) * scale_weights['meso'] +
-                    F.l1_loss(outputs[2], macro) * scale_weights['macro']
+                loss, loss_components = compute_loss(
+                    outputs, (micro, meso, macro), 
+                    scale_weights, outputs[3]
                 )
-                
-                # Perte totale
-                loss = recon_loss + 0.1 * perceptual_loss + style_loss
             
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -315,70 +235,76 @@ def train_model(data_dir, num_epochs=50, batch_size=32):  # Batch size réduit �
             scaler.update()
             scheduler.step()
             
-            epoch_losses.append(loss.item())
+            epoch_losses.append(loss_components)
+        
+        model.eval()
+        test_loss = 0
+        with torch.no_grad():
+            for micro, meso, macro in test_loader:
+                micro = micro.to(device, non_blocking=True)
+                meso = meso.to(device, non_blocking=True)
+                macro = macro.to(device, non_blocking=True)
+                
+                with torch.cuda.amp.autocast():
+                    outputs = model(micro, meso, macro)
+                    loss, _ = compute_loss(outputs, (micro, meso, macro), scale_weights, outputs[3])
+                test_loss += loss.item()
+        
+        test_loss /= len(test_loader)
+        avg_train_loss = np.mean([l['total'] for l in epoch_losses])
+        
+        train_losses.append(avg_train_loss)
+        test_losses.append(test_loss)
+        
+        print(f'\nEpoch {epoch+1}:')
+        print(f'Train Loss: {avg_train_loss:.6f}')
+        components = {k: np.mean([l[k] for l in epoch_losses]) for k in epoch_losses[0].keys()}
+        for k, v in components.items():
+            print(f'  {k}: {v:.6f}')
+        print(f'Test Loss: {test_loss:.6f}')
+        print(f'LR: {scheduler.get_last_lr()[0]:.6f}')
+        
+        if test_loss < best_test_loss:
+            best_test_loss = test_loss
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'test_loss': test_loss,
+            }, 'best_model.pth')
+        
+        if (epoch + 1) % 5 == 0 or epoch == 0:
+            plt.figure(figsize=(12, 4))
             
-            # Libération de la mémoire
-            del outputs, loss, perceptual_loss, style_loss
-            torch.cuda.empty_cache()
-        
-        avg_loss = np.mean(epoch_losses)
-        print(f'\nEpoch {epoch+1}: Loss = {avg_loss:.6f}')
-        
-        # Sauvegarde du modèle
-        if avg_loss < best_test_loss:
-            best_test_loss = avg_loss
-            torch.save(model.state_dict(), 'best_model.pth')
-        
-        # Visualisation des reconstructions
-        if (epoch + 1) % 5 == 0:
-            model.eval()
-            with torch.no_grad():
-                test_micro, test_meso, test_macro = next(iter(test_loader))
-                test_micro = test_micro.to(device)
-                recon_micro, _, _, _ = model(test_micro, test_meso.to(device), test_macro.to(device))
-                
-                plt.figure(figsize=(10, 5))
-                plt.subplot(1, 2, 1)
-                plt.imshow(test_micro[0].cpu().numpy().transpose(1, 2, 0))
-                plt.title('Original')
-                plt.axis('off')
-                
-                plt.subplot(1, 2, 2)
-                plt.imshow(recon_micro[0].cpu().numpy().transpose(1, 2, 0))
-                plt.title('Reconstructed')
-                plt.axis('off')
-                
-                plt.savefig(f'reconstruction_epoch_{epoch+1}.png')
-                plt.close()
-                
-                # Libération de la mémoire
-                del recon_micro
-                torch.cuda.empty_cache()
-        
-        # Nettoyage de la mémoire à la fin de chaque époque
-        gc.collect()
-        torch.cuda.empty_cache()
+            plt.subplot(1, 2, 1)
+            plt.plot(train_losses, label='Train')
+            plt.plot(test_losses, label='Test')
+            plt.title('Total Loss')
+            plt.xlabel('Epoch')
+            plt.ylabel('Loss')
+            plt.legend()
+            
+            plt.subplot(1, 2, 2)
+            for k in ['reconstruction', 'micro', 'meso', 'macro', 'reg']:
+                values = [l[k] for l in epoch_losses]
+                plt.plot(values, label=k)
+            plt.title('Loss Components')
+            plt.xlabel('Batch')
+            plt.ylabel('Loss')
+            plt.legend()
+            
+            plt.tight_layout()
+            plt.savefig(f'training_progress_epoch_{epoch+1}.png')
+            plt.close()
     
-    return model, train_losses
+    return model, train_losses, test_losses
 
 if __name__ == "__main__":
-    # Configuration avec les paramètres optimisés pour la mémoire
     config = {
         "data_dir": "data",
         "num_epochs": 50,
-        "batch_size": 16  # Batch size encore plus petit si nécessaire
+        "batch_size": 64
     }
     
-    # Nettoyage initial de la mémoire
-    gc.collect()
-    torch.cuda.empty_cache()
-    
-    try:
-        model, train_losses = train_model(**config)
-    except RuntimeError as e:
-        if "out of memory" in str(e):
-            print("OOM détecté. Essayons avec un batch size plus petit...")
-            config["batch_size"] = 8
-            model, train_losses = train_model(**config)
-        else:
-            raise e
+    model, train_losses, test_losses = train_model(**config)

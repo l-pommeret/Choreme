@@ -190,14 +190,14 @@ def train_model(data_dir, num_epochs=50, batch_size=64):
     
     optimizer = optim.AdamW(
         model.parameters(),
-        lr=5e-4,
+        lr=5e-3,
         weight_decay=1e-5,
         betas=(0.9, 0.999)
     )
     
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer,
-        max_lr=5e-3,
+        max_lr=5e-2,
         epochs=num_epochs,
         steps_per_epoch=len(train_loader),
         pct_start=0.3,

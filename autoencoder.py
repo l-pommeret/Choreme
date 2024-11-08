@@ -44,12 +44,25 @@ class ConvBlock(nn.Module):
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(out_channels)
+        self.conv3 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(out_channels)
+        self.conv4 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.bn4 = nn.BatchNorm2d(out_channels)
         
     def forward(self, x):
+        # Premier bloc ResNet
+        identity1 = x
         x = F.leaky_relu(self.bn1(self.conv1(x)), 0.2)
-        identity = x
         x = F.leaky_relu(self.bn2(self.conv2(x)), 0.2)
-        return x + identity
+        x = x + identity1 if x.shape == identity1.shape else x
+        
+        # Deuxième bloc ResNet
+        identity2 = x
+        x = F.leaky_relu(self.bn3(self.conv3(x)), 0.2)
+        x = F.leaky_relu(self.bn4(self.conv4(x)), 0.2)
+        x = x + identity2
+        
+        return x
 
 class ConvEncoder(nn.Module):
     def __init__(self, scale_latent_dim):
@@ -57,10 +70,15 @@ class ConvEncoder(nn.Module):
         self.conv1 = ConvBlock(3, 64)
         self.conv2 = ConvBlock(64, 128)
         self.conv3 = ConvBlock(128, 256)
+        self.conv4 = ConvBlock(256, 256)
         
         self.flatten = nn.Flatten()
         self.fc = nn.Sequential(
             nn.Linear(256 * 8 * 8, 1024),
+            nn.LayerNorm(1024),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.1),
+            nn.Linear(1024, 1024),
             nn.LayerNorm(1024),
             nn.LeakyReLU(0.2),
             nn.Dropout(0.1),
@@ -75,6 +93,7 @@ class ConvEncoder(nn.Module):
         x = F.max_pool2d(x, 2)
         x = self.conv3(x)
         x = F.max_pool2d(x, 2)
+        x = self.conv4(x)
         
         x = self.flatten(x)
         x = self.fc(x)
@@ -88,21 +107,25 @@ class ConvDecoder(nn.Module):
             nn.LayerNorm(1024),
             nn.LeakyReLU(0.2),
             nn.Dropout(0.1),
+            nn.Linear(1024, 1024),
+            nn.LayerNorm(1024),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.1),
             nn.Linear(1024, 256 * 8 * 8),
             nn.LayerNorm(256 * 8 * 8),
             nn.LeakyReLU(0.2)
         )
         
-        self.conv1 = ConvBlock(256, 128)
-        self.conv2 = ConvBlock(128, 64)
-        self.conv3 = ConvBlock(64, 32)
+        self.conv1 = ConvBlock(256, 256)
+        self.conv2 = ConvBlock(256, 128)
+        self.conv3 = ConvBlock(128, 64)
+        self.conv4 = ConvBlock(64, 32)
         self.final_conv = nn.Conv2d(32, 3, kernel_size=1)
         
     def forward(self, x):
         x = self.fc(x)
         x = x.view(-1, 256, 8, 8)
         
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
         x = self.conv1(x)
         
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
@@ -110,6 +133,9 @@ class ConvDecoder(nn.Module):
         
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
         x = self.conv3(x)
+        
+        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
+        x = self.conv4(x)
         
         x = self.final_conv(x)
         return torch.sigmoid(x)
@@ -188,8 +214,8 @@ def train_model(data_dir, num_epochs=50, batch_size=64):
     
     scale_weights = {
         'micro': 1,
-        'meso': 0,  # Modifié pour activer l'apprentissage sur toutes les échelles
-        'macro': 0
+        'meso': 1,  # Modifié pour activer l'apprentissage sur toutes les échelles
+        'macro': 1
     }
     
     train_dataset = MultiScaleImageDataset(data_dir, 'train')
@@ -303,7 +329,7 @@ if __name__ == "__main__":
     config = {
         "data_dir": "data",
         "num_epochs": 50,
-        "batch_size": 64
+        "batch_size": 128
     }
     
     model, train_losses, test_losses = train_model(**config)
